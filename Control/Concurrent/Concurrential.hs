@@ -9,6 +9,7 @@ Portability : non-portable (GHC only)
 -}
 
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Control.Concurrent.Concurrential (
 
@@ -57,32 +58,52 @@ instance Monad Concurrential where
 -- | Run a Concurrential term with a continuation. We choose CPS here because
 --   it allows us to explot @withAsync@, giving us a guarantee that an
 --   exception in a spawning thread will kill spawned threads.
-runConcurrentialK :: Concurrential t -> (Async t -> IO r) -> IO r
-runConcurrentialK sc k = case sc of
+runConcurrentialK
+  :: Concurrential t
+  -- ^ The computation to run.
+  -> Async s
+  -- ^ The sequential part.
+  -> (forall s . (Async s, Async t) -> IO r)
+  -- ^ The continuation; fst is sequential part, snd is value part.
+  --   We use the rank 2 type for s because we really don't care what the
+  --   value of the sequential part it, we just need to wait for it and then
+  --   continue with >>.
+  -> IO r
+runConcurrentialK sc sequentialPart k = case sc of
     SCAtom choice -> case choice of
-        Sequential io -> io >>= \x -> withAsync (return x) k
-        Concurrent io -> withAsync io k
-    SCBind sc next -> runConcurrentialK sc $ \asyncS -> do
+        Sequential io -> withAsync (wait sequentialPart >> io) (\async -> k (async, async))
+        -- ^ The async created becomes the sequential part and the value
+        --   part. So when another Sequential is encountered, its value part
+        --   will have to wait for this computation to complete.
+        Concurrent io -> withAsync io (\async -> k (sequentialPart, async))
+        -- ^ The async created is the value part, but the sequential part
+        --   remains the same.
+    SCBind sc next -> runConcurrentialK sc sequentialPart $ \(sequentialPart, asyncS) -> do
         s <- wait asyncS
-        runConcurrentialK (next s) k
+        runConcurrentialK (next s) sequentialPart k
     SCAp left right ->
-        runConcurrentialK left $ \asyncF ->
-        runConcurrentialK right $ \asyncX ->
+        runConcurrentialK left sequentialPart $ \(sequentialPart, asyncF) ->
+        runConcurrentialK right sequentialPart $ \(sequentialPart, asyncX) ->
         let waitAndApply = do
               f <- wait asyncF
               x <- wait asyncX
               return $ f x
-        in withAsync waitAndApply k
+        in withAsync waitAndApply (\async -> k (sequentialPart, async))
 
 -- | Run a Concurrential term, realizing the effects of the IOs which compose
 --   it.
 runConcurrential :: Concurrential t -> IO t
-runConcurrential c = runConcurrentialK c wait
+runConcurrential c = do
+    sequentialPart <- async $ return ()
+    -- ^ I believe it is safe to supply the async in this way, without using
+    -- withAsync, because the computation is trivial, and we need not worry
+    -- about this thread dangling.
+    runConcurrentialK c sequentialPart (wait . snd)
 
 -- | Create an IO which must be run sequentially.
 --   If a @sequentially io@ appears in a @Concurrential t@ term then it will
---   always be run to completion before any later part of the term is run.
---   Consider the following terms:
+--   always be run to completion before any later sequential part of the term
+--   is run. Consider the following terms:
 --
 --   @
 --     a = someConcurrential *> sequentially io *> someOtherConcurrential
@@ -90,9 +111,9 @@ runConcurrential c = runConcurrentialK c wait
 --   @
 --
 --   When running the term @a@, we are guaranteed that @io@ is completed before
---   @someOtherConcurrential@ is begun, but when running the term @b@, this is
---   not the case; @io@ may be interleaved with or even run after
---   @someOtherConcurrential@ is run.
+--   any sequential part of @someOtherConcurrential@ is begun, but when running
+--   the term @b@, this is not the case; @io@ may be interleaved with or even
+--   run after any part of @someOtherConcurrential@.
 sequentially :: IO t -> Concurrential t
 sequentially = SCAtom . Sequential
 
