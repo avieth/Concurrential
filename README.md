@@ -12,6 +12,11 @@ possible. This increases modularity, as the order of computations can be fixed
 to a certain extent, without demanding that the user of this computation know
 anything about its concurrency-related assumptions.
 
+# A demonstration
+
+In this example, we assume some IO read/write feature, perhaps to and from a
+database system, and show how reads and writes can be safely interleaved.
+
 ```Haskell
 import Prelude hiding (read, readIO)
 import Control.Applicative
