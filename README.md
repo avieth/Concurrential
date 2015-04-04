@@ -58,3 +58,34 @@ demonstration = runConcurrential $
     <*> read "C"
     <*  write "D" (Just "d")
 ```
+
+# How it works
+
+Terms of the `Concurrently` monad are of the form
+
+```Haskell
+data Concurrential t where
+  SCAtom :: Either (Sequential (IO t)) (Concurrently (IO t)) -> Concurrential t
+  SCBind :: Concurrential s -> (s -> Concurrential t) -> Concurrential t
+  SCAp :: Concurrential (r -> t) -> Concurrential r -> Concurrential t
+```
+
+Given the `SCBind` and `SCAp` constructors, definitions of `>>=` and `<*>` are
+trivial:
+
+```Haskell
+(<*>) :: Concurrential (r -> t) -> Concurrential r -> Concurrential t
+(<*>) = SCAp
+
+(>>=) :: Concurrential s -> (s -> Concurrential t) -> Concurrential t
+(>>=) = SCBind
+```
+
+`return` and `pure` use `pure :: a -> IO a` and inject it into the sequential
+variant of `SCAtom`, but I am not sure that choosing the concurrently variant
+would have any benefits or drawbacks. The injections `sequentially` and
+`concurrently` wrap an existing `IO` in the appropriate `SCAtom` variant.
+
+With this language in place, the function `runConcurrential` is defined, which
+will run the `IO`s in the `Concurrential` term concurrently such that all
+sequential `SCAtom` terms are run in the order in which they appear.

@@ -6,6 +6,12 @@ Licence     : BSD3
 Maintainer  : aovieth@gmail.com
 Stability   : experimental
 Portability : non-portable (GHC only)
+
+The functions @sequentially@ and @concurrently@ inject @IO@ terms into the
+@Concurrential@ monad. This monad's Applicative instance will exploit as
+much concurrency as possible, much like the @Concurrently@ monad from async,
+such that all @sequentially@ terms will be run in the order in which they
+would have been run had they been typical IOs.
 -}
 
 {-# LANGUAGE GADTs #-}
@@ -71,13 +77,13 @@ runConcurrentialK
   -> IO r
 runConcurrentialK sc sequentialPart k = case sc of
     SCAtom choice -> case choice of
+        -- The async created becomes the sequential part and the value
+        -- part. So when another Sequential is encountered, its value part
+        -- will have to wait for this computation to complete.
         Sequential io -> withAsync (wait sequentialPart >> io) (\async -> k (async, async))
-        -- ^ The async created becomes the sequential part and the value
-        --   part. So when another Sequential is encountered, its value part
-        --   will have to wait for this computation to complete.
+        -- The async created is the value part, but the sequential part
+        -- remains the same.
         Concurrent io -> withAsync io (\async -> k (sequentialPart, async))
-        -- ^ The async created is the value part, but the sequential part
-        --   remains the same.
     SCBind sc next -> runConcurrentialK sc sequentialPart $ \(sequentialPart, asyncS) -> do
         s <- wait asyncS
         runConcurrentialK (next s) sequentialPart k
@@ -94,10 +100,10 @@ runConcurrentialK sc sequentialPart k = case sc of
 --   it.
 runConcurrential :: Concurrential t -> IO t
 runConcurrential c = do
-    sequentialPart <- async $ return ()
-    -- ^ I believe it is safe to supply the async in this way, without using
+    -- I believe it is safe to supply the async in this way, without using
     -- withAsync, because the computation is trivial, and we need not worry
     -- about this thread dangling.
+    sequentialPart <- async $ return ()
     runConcurrentialK c sequentialPart (wait . snd)
 
 -- | Create an IO which must be run sequentially.
@@ -108,12 +114,17 @@ runConcurrential c = do
 --   @
 --     a = someConcurrential *> sequentially io *> someOtherConcurrential
 --     b = someConcurrential *> concurrently io *> someOtherConcurrential
+--     c = someConcurrential *> sequentially io *> concurrently otherIo
 --   @
 --
 --   When running the term @a@, we are guaranteed that @io@ is completed before
 --   any sequential part of @someOtherConcurrential@ is begun, but when running
 --   the term @b@, this is not the case; @io@ may be interleaved with or even
---   run after any part of @someOtherConcurrential@.
+--   run after any part of @someOtherConcurrential@. The term @c@ highlights an
+--   important point: @concurrently otherIo@ may be run before, during or after
+--   @sequentially io@! The ordering through applicative combinators is
+--   guaranteed only among sequential terms.
+--
 sequentially :: IO t -> Concurrential t
 sequentially = SCAtom . Sequential
 
