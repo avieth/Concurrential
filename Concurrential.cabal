@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                Concurrential
-version:             0.1.0.0
+version:             0.2.0.0
 synopsis:            Mix concurrent and sequential computation
 -- description:         
 homepage:            http://github.com/avieth/Concurrential
@@ -17,7 +17,8 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Control.Concurrent.Concurrential, Control.Concurrent.SafeConcurrential
+  exposed-modules:       Control.Concurrent.Concurrential
+                       , Control.Concurrent.Concurrential.Safely
   -- other-modules:       
   other-extensions:      GADTs
                        , DeriveDataTypeable
