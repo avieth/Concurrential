@@ -16,6 +16,7 @@ would have been run had they been typical IOs.
 
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 module Control.Concurrent.Concurrential (
 
@@ -31,9 +32,12 @@ module Control.Concurrent.Concurrential (
 import Control.Applicative
 import Control.Monad
 import Control.Concurrent.Async hiding (concurrently)
+import Control.Exception
+import Data.Typeable
 
 -- | Description of the way in which an IO should be carried out.
 data Choice t = Sequential (IO t) | Concurrent (IO t)
+  deriving (Typeable)
 
 instance Functor Choice where
   fmap f choice = case choice of
@@ -43,9 +47,10 @@ instance Functor Choice where
 -- | Description of computation which is composed of sequential and concurrent
 --   parts.
 data Concurrential t where
-  SCAtom :: Choice t -> Concurrential t
-  SCBind :: Concurrential s -> (s -> Concurrential t) -> Concurrential t
-  SCAp :: Concurrential (r -> t) -> Concurrential r -> Concurrential t
+    SCAtom :: Choice t -> Concurrential t
+    SCBind :: Concurrential s -> (s -> Concurrential t) -> Concurrential t
+    SCAp :: Concurrential (r -> t) -> Concurrential r -> Concurrential t
+  deriving (Typeable)
 
 instance Functor Concurrential where
   fmap f sc = case sc of
