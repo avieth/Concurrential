@@ -30,7 +30,7 @@ import Control.Concurrent.STM.TVar
 import Control.Concurrent.Concurrential
 import Data.Typeable
 
--- | Concurrential with shared state.
+-- | Introduce shared state into a monad.
 newtype SharedStateT s m a = SharedStateT {
     unSharedStateT :: TVar s -> m a
   } deriving (Typeable, Functor)
