@@ -74,8 +74,27 @@ instance Applicative m => Monad (Concurrential m) where
   return = pure
   (>>=) = SCBind
 
-type Retractor g = forall a . g (IO (g a)) -> IO (g a)
+-- | This corresponds to the notion of a monad transformer; there is some
+--   monad g, and then its associated transformer f. If you have an
+--   
+--     f m a
+--
+--   then you can get an
+--
+--     m (g a)
+--
+--   just by the definition of what it means to be a monad transformer.
+--   Here we're interested in the special case where we can achieve IO (g a).
+--   This does not mean we have to be dealing with an f IO a, it could mean
+--   that the IO is buried deeper in the transformer stack!
 type Injector f g = forall a . f a -> IO (g a)
+
+-- | A witness of this type proves that g is in some sense compatible with IO:
+--   we can bind through it.
+--   TBD would it suffice to give the simpler type
+--     forall a . g (IO a) -> IO (g a)
+--   ?
+type Retractor g = forall a . g (IO (g a)) -> IO (g a)
 
 -- | Run a Concurrential term with a continuation. We choose CPS here because
 --   it allows us to explot @withAsync@, giving us a guarantee that an
