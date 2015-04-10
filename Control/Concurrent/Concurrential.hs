@@ -40,7 +40,6 @@ import Control.Applicative
 import Control.Monad
 import Control.Concurrent.Async hiding (concurrently)
 import Control.Exception
-import Data.Functor.Identity
 import Data.Typeable
 
 -- | Description of the way in which an IO should be carried out.
