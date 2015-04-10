@@ -25,13 +25,14 @@ module Control.Concurrent.Concurrential (
 
     Concurrential
 
+  , Retractor
+  , Injector
+
   , runConcurrential
+  , runSimple
 
   , sequentially
   , concurrently
-
-  , runSimple
-  , runExceptionSafe
 
   ) where
 
@@ -43,74 +44,76 @@ import Data.Functor.Identity
 import Data.Typeable
 
 -- | Description of the way in which an IO should be carried out.
-data Choice t = Sequential (IO t) | Concurrent (IO t)
+data Choice m t = Sequential (m t) | Concurrent (m t)
   deriving (Typeable)
 
-instance Functor Choice where
+instance Functor m => Functor (Choice m) where
   fmap f choice = case choice of
       Sequential io -> Sequential $ fmap f io
       Concurrent io -> Concurrent $ fmap f io
 
 -- | Description of computation which is composed of sequential and concurrent
 --   parts.
-data Concurrential t where
-    SCAtom :: Choice t -> Concurrential t
-    SCBind :: Concurrential s -> (s -> Concurrential t) -> Concurrential t
-    SCAp :: Concurrential (r -> t) -> Concurrential r -> Concurrential t
+data Concurrential m t where
+    SCAtom :: Choice m t -> Concurrential m t
+    SCBind :: Concurrential m s -> (s -> Concurrential m t) -> Concurrential m t
+    SCAp :: Concurrential m (r -> t) -> Concurrential m r -> Concurrential m t
   deriving (Typeable)
 
-instance Functor Concurrential where
+instance Functor m => Functor (Concurrential m) where
   fmap f sc = case sc of
     SCAtom choice -> SCAtom $ fmap f choice
     SCBind sc k -> SCBind sc ((fmap . fmap) f k)
     SCAp sf sx -> SCAp ((fmap . fmap) f sf) sx
 
-instance Applicative Concurrential where
+instance Applicative m => Applicative (Concurrential m) where
   pure = SCAtom . Sequential . pure
   (<*>) = SCAp
 
-instance Monad Concurrential where
+instance Applicative m => Monad (Concurrential m) where
   return = pure
   (>>=) = SCBind
+
+type Retractor g = forall a . g (IO (g a)) -> IO (g a)
+type Injector f g = forall a . f a -> IO (g a)
 
 -- | Run a Concurrential term with a continuation. We choose CPS here because
 --   it allows us to explot @withAsync@, giving us a guarantee that an
 --   exception in a spawning thread will kill spawned threads.
 runConcurrentialK
   :: (Functor m, Applicative m, Monad m)
-  => Concurrential t
+  => Retractor m
+  -> Injector f m
+  -> Concurrential f t
   -- ^ The computation to run.
   -> Async (m s)
   -- ^ The sequential part.
-  -> (forall a . IO a -> IO (m a))
-  -- ^ For extensibility
-  -> (forall a . m (IO (m a)) -> IO (m a))
-  -- ^ For extensibility
   -> (forall s . (Async (m s), Async (m t)) -> IO (m r))
   -- ^ The continuation; fst is sequential part, snd is value part.
   --   We use the rank 2 type for s because we really don't care what the
   --   value of the sequential part it, we just need to wait for it and then
   --   continue with >>.
   -> IO (m r)
-runConcurrentialK sc sequentialPart extender retractor k = case sc of
+runConcurrentialK retractor injector sc sequentialPart k = case sc of
     SCAtom choice -> case choice of
         -- The async created becomes the sequential part and the value
         -- part. So when another Sequential is encountered, its value part
         -- will have to wait for this computation to complete.
-        Sequential io -> withAsync
-                         (wait sequentialPart >> extender io)
+        Sequential em -> withAsync
+                         (wait sequentialPart >> injector em)
                          (\async -> k (async, async))
         -- The async created is the value part, but the sequential part
         -- remains the same.
-        Concurrent io -> withAsync
-                         (extender io)
+        Concurrent em -> withAsync
+                         (injector em)
                          (\async -> k (sequentialPart, async))
-    SCBind sc next -> runConcurrentialK sc sequentialPart extender retractor $ \(sequentialPart, asyncS) -> do
+    SCBind sc next -> runConcurrentialK retractor injector sc sequentialPart $ \(sequentialPart, asyncS) -> do
         s <- wait asyncS
-        retractor (fmap (\x -> runConcurrentialK (next x) sequentialPart extender retractor k) s)
+        let continue = \x -> runConcurrentialK retractor injector (next x) sequentialPart k
+        retractor (fmap continue s)
     SCAp left right ->
-        runConcurrentialK left sequentialPart extender retractor $ \(sequentialPart, asyncF) ->
-        runConcurrentialK right sequentialPart extender retractor $ \(sequentialPart, asyncX) ->
+        runConcurrentialK retractor injector left sequentialPart $ \(sequentialPart, asyncF) ->
+        runConcurrentialK retractor injector right sequentialPart $ \(sequentialPart, asyncX) ->
         let waitAndApply = do
               f <- wait asyncF
               x <- wait asyncX
@@ -121,16 +124,31 @@ runConcurrentialK sc sequentialPart extender retractor k = case sc of
 --   it.
 runConcurrential
   :: (Functor m, Applicative m, Monad m)
-  => (forall a . IO a -> IO (m a))
-  -> (forall a . m (IO (m a)) -> IO (m a))
-  -> Concurrential t
+  => Retractor m
+  -> Injector f m
+  -> Concurrential f t
   -> IO (m t)
-runConcurrential extender retractor c = do
+runConcurrential retractIO injectIO c = do
     -- I believe it is safe to supply the async in this way, without using
     -- withAsync, because the computation is trivial, and we need not worry
     -- about this thread dangling.
     sequentialPart <- async $ return (return ())
-    runConcurrentialK c sequentialPart extender retractor (wait . snd)
+    runConcurrentialK retractIO injectIO c sequentialPart (wait . snd)
+
+runSimple :: Concurrential IO t -> IO t
+runSimple = join . runConcurrential retractor injector
+  where
+    retractor :: Retractor IO
+    retractor = join
+    injector :: Injector IO IO
+    injector io = io >>= return . return
+    -- Note that if we chose injector = return we would lose concurrency!
+    -- This is very subtle and I don't understand it well.
+    -- My best explanation: the injector must bring the effect held in the
+    -- term "to the front" so that it would be realized by, for instance, a
+    -- withAsync call. If we leave it as just @return@ then runConcurrential
+    -- will concurrently build up the term which will ultimately be run
+    -- sequentially.
 
 -- | Create an IO which must be run sequentially.
 --   If a @sequentially io@ appears in a @Concurrential t@ term then it will
@@ -151,7 +169,7 @@ runConcurrential extender retractor c = do
 --   @sequentially io@! The ordering through applicative combinators is
 --   guaranteed only among sequential terms.
 --
-sequentially :: IO t -> Concurrential t
+sequentially :: m t -> Concurrential m t
 sequentially = SCAtom . Sequential
 
 -- | Create an IO which is run concurrently where possible, i.e. whenever it
@@ -165,19 +183,6 @@ sequentially = SCAtom . Sequential
 --   When running the term @a@, the IO term @io@ will be run concurrently with
 --   @someConcurrential@, but not so in @b@, because monadic composition has
 --   been used.
-concurrently :: IO t -> Concurrential t
+concurrently :: m t -> Concurrential m t
 concurrently = SCAtom . Concurrent
 
-runSimple :: Concurrential t -> IO (Identity t)
-runSimple = runConcurrential extender retractor
-  where
-    extender = fmap Identity
-    retractor = runIdentity
-
-runExceptionSafe :: Concurrential t -> IO (Either SomeException t)
-runExceptionSafe = runConcurrential extender retractor
-  where
-    extender io = (Right <$> io) `catch` (\(e :: SomeException) -> return $ Left e)
-    retractor x = case x of
-        Left e -> return $ Left e
-        Right io -> io
