@@ -29,7 +29,7 @@ module Control.Concurrent.Concurrential (
   , Injector
 
   , runConcurrential
-  , runSimple
+  , runConcurrentialSimple
 
   , sequentially
   , concurrently
@@ -154,8 +154,8 @@ runConcurrential retractIO injectIO c = do
     sequentialPart <- async $ return (return ())
     runConcurrentialK retractIO injectIO c sequentialPart (wait . snd)
 
-runSimple :: Concurrential IO t -> IO t
-runSimple = join . runConcurrential retractor injector
+runConcurrentialSimple :: Concurrential IO t -> IO t
+runConcurrentialSimple = join . runConcurrential retractor injector
   where
     retractor :: Retractor IO
     retractor = join
