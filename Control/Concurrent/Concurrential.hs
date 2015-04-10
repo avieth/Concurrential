@@ -42,7 +42,7 @@ import Control.Concurrent.Async hiding (concurrently)
 import Control.Exception
 import Data.Typeable
 
--- | Description of the way in which an IO should be carried out.
+-- | Description of the way in which a monadic term should be carried out.
 data Choice m t = Sequential (m t) | Concurrent (m t)
   deriving (Typeable)
 
@@ -52,7 +52,7 @@ instance Functor m => Functor (Choice m) where
       Concurrent io -> Concurrent $ fmap f io
 
 -- | Description of computation which is composed of sequential and concurrent
---   parts.
+--   parts in some monad.
 data Concurrential m t where
     SCAtom :: Choice m t -> Concurrential m t
     SCBind :: Concurrential m s -> (s -> Concurrential m t) -> Concurrential m t
@@ -138,8 +138,8 @@ runConcurrentialK retractor injector sc sequentialPart k = case sc of
               return $ f <*> x
         in  withAsync waitAndApply (\async -> k (sequentialPart, async))
 
--- | Run a Concurrential term, realizing the effects of the IOs which compose
---   it.
+-- | Run a Concurrential term, realizing the effects of the IO-like terms which
+--   compose it.
 runConcurrential
   :: (Functor m, Applicative m, Monad m)
   => Retractor m
