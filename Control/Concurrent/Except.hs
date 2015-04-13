@@ -14,7 +14,9 @@ Portability : non-portable (GHC only)
 module Control.Concurrent.Except (
 
     ExceptT(..)
+  , injectE
   , throwE
+  , catchE
 
   ) where
 
@@ -40,5 +42,17 @@ instance Monad m => Monad (ExceptT e m) where
         Left e -> return $ Left e
         Right x -> runExceptT $ k x
 
+injectE :: Applicative m => Either e a -> ExceptT e m a
+injectE x = case x of
+    Left e -> throwE e
+    Right v -> pure v
+
 throwE :: Applicative m => e -> ExceptT e m a
 throwE = ExceptT . pure . Left
+
+catchE :: Monad m => ExceptT e m a -> (e -> ExceptT e' m a) -> ExceptT e' m a
+catchE exceptT handler = ExceptT $ do
+    outcome <- runExceptT exceptT
+    case outcome of
+        Left exception -> runExceptT $ handler exception
+        Right value -> return $ Right value

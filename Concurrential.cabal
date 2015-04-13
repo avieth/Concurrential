@@ -19,6 +19,7 @@ cabal-version:       >=1.10
 library
   exposed-modules:       Control.Concurrent.Concurrential
                        , Control.Concurrent.Concurrential.Safely
+                       , Control.Concurrent.Except
   -- other-modules:       
   other-extensions:      GADTs
                        , DeriveDataTypeable
