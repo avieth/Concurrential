@@ -125,17 +125,21 @@ runConcurrentialK retractor injector sc sequentialPart k = case sc of
         Concurrent em -> withAsync
                          (injector em)
                          (\async -> k (sequentialPart, async))
-    SCBind sc next -> runConcurrentialK retractor injector sc sequentialPart $ \(sequentialPart, asyncS) -> do
-        s <- wait asyncS
-        let continue = \x -> runConcurrentialK retractor injector (next x) sequentialPart k
-        retractor (fmap continue s)
+    SCBind sc next ->
+        runConcurrentialK retractor injector sc sequentialPart $ \(sequentialPart, asyncS) ->
+        let waitAndContinue = do
+                s <- wait asyncS
+                let k' (sequentialPart, asyncT) = wait asyncT
+                let continue = \x -> runConcurrentialK retractor injector (next x) sequentialPart k'
+                retractor (fmap continue s)
+        in  withAsync waitAndContinue (\async -> k (sequentialPart, async))
     SCAp left right ->
         runConcurrentialK retractor injector left sequentialPart $ \(sequentialPart, asyncF) ->
         runConcurrentialK retractor injector right sequentialPart $ \(sequentialPart, asyncX) ->
         let waitAndApply = do
-              f <- wait asyncF
-              x <- wait asyncX
-              return $ f <*> x
+                f <- wait asyncF
+                x <- wait asyncX
+                return $ f <*> x
         in  withAsync waitAndApply (\async -> k (sequentialPart, async))
 
 -- | Run a Concurrential term, realizing the effects of the IO-like terms which
