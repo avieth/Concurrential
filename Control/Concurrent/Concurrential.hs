@@ -44,7 +44,20 @@ import Control.Monad
 import Control.Concurrent.Async hiding (concurrently)
 import Control.Exception
 import Data.Typeable
-import Data.Functor.Identity
+
+-- | Our own Identity functor, so that we don't have to depend upon some
+--   other package.
+newtype Identity a = Identity {
+    runIdentity :: a
+  } deriving (Functor)
+
+instance Applicative Identity where
+  pure = Identity
+  f <*> x = Identity $ (runIdentity f) (runIdentity x)
+
+instance Monad Identity where
+  return = Identity
+  x >>= k = Identity $ (runIdentity . k) (runIdentity x)
 
 -- | Description of the way in which a monadic term should be carried out.
 data Choice m t = Sequential (m t) | Concurrent (m t)
