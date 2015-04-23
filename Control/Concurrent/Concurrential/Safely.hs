@@ -48,4 +48,4 @@ safely io = ExceptT ((Right <$> io) `catch` (\(e :: SomeException) -> return $ L
 runSafely
   :: Concurrential (ExceptT SomeException IO) a
   -> IO (Either SomeException a)
-runSafely = runConcurrential retractor injector
+runSafely c = runConcurrential retractor injector c wait
