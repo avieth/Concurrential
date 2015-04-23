@@ -34,6 +34,9 @@ module Control.Concurrent.Concurrential (
   , sequentially
   , concurrently
 
+  , wait
+  -- ^ From Async
+
   ) where
 
 import Control.Applicative
@@ -41,6 +44,7 @@ import Control.Monad
 import Control.Concurrent.Async hiding (concurrently)
 import Control.Exception
 import Data.Typeable
+import Data.Functor.Identity
 
 -- | Description of the way in which a monadic term should be carried out.
 data Choice m t = Sequential (m t) | Concurrent (m t)
@@ -106,12 +110,12 @@ runConcurrentialK
   -- ^ The computation to run.
   -> Async (m s)
   -- ^ The sequential part.
-  -> (forall s . (Async (m s), Async (m t)) -> IO (m r))
+  -> (forall s . (Async (m s), Async (m t)) -> IO r)
   -- ^ The continuation; fst is sequential part, snd is value part.
   --   We use the rank 2 type for s because we really don't care what the
   --   value of the sequential part it, we just need to wait for it and then
   --   continue with >>.
-  -> IO (m r)
+  -> IO r
 runConcurrentialK retractor injector sc sequentialPart k = case sc of
     SCAtom choice -> case choice of
         -- The async created becomes the sequential part and the value
@@ -129,9 +133,15 @@ runConcurrentialK retractor injector sc sequentialPart k = case sc of
         runConcurrentialK retractor injector sc sequentialPart $ \(sequentialPart, asyncS) ->
         let waitAndContinue = do
                 s <- wait asyncS
-                let k' (sequentialPart, asyncT) = wait asyncT
-                let continue = \x -> runConcurrentialK retractor injector (next x) sequentialPart k'
-                retractor (fmap continue s)
+                let continue = \x ->
+                        runConcurrentialK
+                        retractor
+                        injector
+                        (next x)
+                        sequentialPart
+                        (wait . snd)
+                let unretracted = fmap continue s
+                retractor unretracted
         in  withAsync waitAndContinue (\async -> k (sequentialPart, async))
     SCAp left right ->
         runConcurrentialK retractor injector left sequentialPart $ \(sequentialPart, asyncF) ->
@@ -149,28 +159,28 @@ runConcurrential
   => Retractor m
   -> Injector f m
   -> Concurrential f t
-  -> IO (m t)
-runConcurrential retractIO injectIO c = do
-    -- I believe it is safe to supply the async in this way, without using
-    -- withAsync, because the computation is trivial, and we need not worry
-    -- about this thread dangling.
-    sequentialPart <- async $ return (return ())
-    runConcurrentialK retractIO injectIO c sequentialPart (wait . snd)
+  -> (Async (m t) -> IO r)
+  -- ^ Similar contract to withAsync; the Async argument is useless outside of
+  -- this function.
+  -> IO r
+runConcurrential retractor injector c k = do
+    let action = \sequentialPart ->
+            runConcurrentialK retractor injector c sequentialPart (k . snd)
+    withAsync (return (return ())) action
 
-runConcurrentialSimple :: Concurrential IO t -> IO t
-runConcurrentialSimple = join . runConcurrential retractor injector
+runConcurrentialSimple :: Concurrential IO t -> (Async t -> IO r) -> IO r
+runConcurrentialSimple c k = runConcurrential simpleRetractor simpleInjector c (continue k)
+
   where
-    retractor :: Retractor IO
-    retractor = join
-    injector :: Injector IO IO
-    injector io = io >>= return . return
-    -- Note that if we chose injector = return we would lose concurrency!
-    -- This is very subtle and I don't understand it well.
-    -- My best explanation: the injector must bring the effect held in the
-    -- term "to the front" so that it would be realized by, for instance, a
-    -- withAsync call. If we leave it as just @return@ then runConcurrential
-    -- will concurrently build up the term which will ultimately be run
-    -- sequentially.
+
+    continue :: (Async t -> IO r) -> (Async (Identity t) -> IO r)
+    continue k = \async -> k $ fmap runIdentity async
+
+    simpleRetractor :: Retractor Identity
+    simpleRetractor = runIdentity
+
+    simpleInjector :: Injector IO Identity
+    simpleInjector = fmap Identity
 
 -- | Create an IO which must be run sequentially.
 --   If a @sequentially io@ appears in a @Concurrential t@ term then it will
