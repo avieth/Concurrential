@@ -25,8 +25,8 @@ module Control.Concurrent.Concurrential (
 
     Concurrential
 
-  , Retractor
-  , Injector
+  , Runner
+  , Joiner
 
   , runConcurrential
   , runConcurrentialSimple
@@ -59,7 +59,8 @@ instance Monad Identity where
   return = Identity
   x >>= k = Identity $ (runIdentity . k) (runIdentity x)
 
--- | Description of the way in which a monadic term should be carried out.
+-- | Description of the way in which a monadic term's evaluation should be
+--   carried out.
 data Choice m t = Sequential (m t) | Concurrent (m t)
   deriving (Typeable)
 
@@ -69,7 +70,7 @@ instance Functor m => Functor (Choice m) where
       Concurrent io -> Concurrent $ fmap f io
 
 -- | Description of computation which is composed of sequential and concurrent
---   parts in some monad.
+--   parts in some monad @m@.
 data Concurrential m t where
     SCAtom :: Choice m t -> Concurrential m t
     SCBind :: Concurrential m s -> (s -> Concurrential m t) -> Concurrential m t
@@ -90,75 +91,90 @@ instance Applicative m => Monad (Concurrential m) where
   return = pure
   (>>=) = SCBind
 
--- | This corresponds to the notion of a monad transformer; there is some
---   monad g, and then its associated transformer f. If you have an
+-- | This corresponds to the notion of a common type of monad transformer:
+--   there is some monad g, and then its associated transformer type f, for
+--   instance MaybeT = f and Maybe = g
+--   If we have an
 --   
---     f m a
+--     @
+--       f m a
+--     @
 --
---   then you can get an
+--   then we can get an
 --
---     m (g a)
+--     @
+--       m (g a)
+--     @
 --
---   just by the definition of what it means to be a monad transformer.
 --   Here we're interested in the special case where we can achieve IO (g a).
 --   This does not mean we have to be dealing with an f IO a, it could mean
 --   that the IO is buried deeper in the transformer stack!
-type Injector f g = forall a . f a -> IO (g a)
+--
+--   Motivation: @Async@ functions work with @IO@ and only @IO@, but the @m@
+--   parameter of a Concurrential may be some other monad which is capable of
+--   performing @IO@, like @Either String IO@ for instance. In order to run
+--   computations in this moand through @Async@, we need to know how to get a
+--   hold of an @IO@. That's what the runner does.
+type Runner f g = forall a . f a -> IO (g a)
 
 -- | A witness of this type proves that g is in some sense compatible with IO:
 --   we can bind through it.
 --   TBD would it suffice to give the simpler type
 --     forall a . g (IO a) -> IO (g a)
 --   ?
-type Retractor g = forall a . g (IO (g a)) -> IO (g a)
+type Joiner g = forall a . g (IO (g a)) -> IO (g a)
 
 -- | Run a Concurrential term with a continuation. We choose CPS here because
 --   it allows us to explot @withAsync@, giving us a guarantee that an
 --   exception in a spawning thread will kill spawned threads.
+--
+--   TBD generalize the IO to any MonadIO?
+--   Maybe not! runConcurrentialK will always run your monad @f@ down to its
+--   IO base; it has to, in order to do concurrency.
 runConcurrentialK
-  :: (Functor m, Applicative m, Monad m)
-  => Retractor m
-  -> Injector f m
-  -> Concurrential f t
+  :: (Functor f, Applicative f, Monad f)
+  => Joiner f
+  -> Runner m f
+  -> Concurrential m t
   -- ^ The computation to run.
-  -> Async (m s)
+  -> Async (f s)
   -- ^ The sequential part.
-  -> (forall s . (Async (m s), Async (m t)) -> IO r)
+  -> (forall s . (Async (f s), Async (f t)) -> IO r)
   -- ^ The continuation; fst is sequential part, snd is value part.
   --   We use the rank 2 type for s because we really don't care what the
   --   value of the sequential part it, we just need to wait for it and then
   --   continue with >>.
   -> IO r
-runConcurrentialK retractor injector sc sequentialPart k = case sc of
+runConcurrentialK joiner runner sc sequentialPart k = case sc of
     SCAtom choice -> case choice of
         -- The async created becomes the sequential part and the value
         -- part. So when another Sequential is encountered, its value part
         -- will have to wait for this computation to complete.
         Sequential em -> withAsync
-                         (wait sequentialPart >> injector em)
+                         (wait sequentialPart >> runner em)
                          (\async -> k (async, async))
         -- The async created is the value part, but the sequential part
         -- remains the same.
         Concurrent em -> withAsync
-                         (injector em)
+                         (runner em)
                          (\async -> k (sequentialPart, async))
     SCBind sc next ->
-        runConcurrentialK retractor injector sc sequentialPart $ \(sequentialPart, asyncS) ->
+        runConcurrentialK joiner runner sc sequentialPart $ \(sequentialPart, asyncS) ->
         let waitAndContinue = do
                 s <- wait asyncS
                 let continue = \x ->
                         runConcurrentialK
-                        retractor
-                        injector
+                        joiner
+                        runner
                         (next x)
                         sequentialPart
                         (wait . snd)
                 let unretracted = fmap continue s
-                retractor unretracted
+                joiner unretracted
         in  withAsync waitAndContinue (\async -> k (sequentialPart, async))
     SCAp left right ->
-        runConcurrentialK retractor injector left sequentialPart $ \(sequentialPart, asyncF) ->
-        runConcurrentialK retractor injector right sequentialPart $ \(sequentialPart, asyncX) ->
+        runConcurrentialK joiner runner left sequentialPart $ \(sequentialPart, asyncF) ->
+        runConcurrentialK joiner runner right sequentialPart $ \(sequentialPart, asyncX) ->
         let waitAndApply = do
                 f <- wait asyncF
                 x <- wait asyncX
@@ -168,34 +184,34 @@ runConcurrentialK retractor injector sc sequentialPart k = case sc of
 -- | Run a Concurrential term, realizing the effects of the IO-like terms which
 --   compose it.
 runConcurrential
-  :: (Functor m, Applicative m, Monad m)
-  => Retractor m
-  -> Injector f m
-  -> Concurrential f t
-  -> (Async (m t) -> IO r)
+  :: (Functor f, Applicative f, Monad f)
+  => Joiner f
+  -> Runner m f
+  -> Concurrential m t
+  -> (Async (f t) -> IO r)
   -- ^ Similar contract to withAsync; the Async argument is useless outside of
   -- this function.
   -> IO r
-runConcurrential retractor injector c k = do
+runConcurrential joiner runner c k = do
     let action = \sequentialPart ->
-            runConcurrentialK retractor injector c sequentialPart (k . snd)
+            runConcurrentialK joiner runner c sequentialPart (k . snd)
     withAsync (return (return ())) action
 
 runConcurrentialSimple :: Concurrential IO t -> (Async t -> IO r) -> IO r
-runConcurrentialSimple c k = runConcurrential simpleRetractor simpleInjector c (continue k)
+runConcurrentialSimple c k = runConcurrential simpleJoiner simpleRunner c (continue k)
 
   where
 
     continue :: (Async t -> IO r) -> (Async (Identity t) -> IO r)
     continue k = \async -> k $ fmap runIdentity async
 
-    simpleRetractor :: Retractor Identity
-    simpleRetractor = runIdentity
+    simpleJoiner :: Joiner Identity
+    simpleJoiner = runIdentity
 
-    simpleInjector :: Injector IO Identity
-    simpleInjector = fmap Identity
+    simpleRunner :: Runner IO Identity
+    simpleRunner = fmap Identity
 
--- | Create an IO which must be run sequentially.
+-- | Create an effect which must be run sequentially.
 --   If a @sequentially io@ appears in a @Concurrential t@ term then it will
 --   always be run to completion before any later sequential part of the term
 --   is run. Consider the following terms:
@@ -217,7 +233,7 @@ runConcurrentialSimple c k = runConcurrential simpleRetractor simpleInjector c (
 sequentially :: m t -> Concurrential m t
 sequentially = SCAtom . Sequential
 
--- | Create an IO which is run concurrently where possible, i.e. whenever it
+-- | Create an effect which is run concurrently where possible, i.e. whenever it
 --   combined applicatively with other terms. For instance:
 --
 --   @
@@ -230,4 +246,3 @@ sequentially = SCAtom . Sequential
 --   been used.
 concurrently :: m t -> Concurrential m t
 concurrently = SCAtom . Concurrent
-

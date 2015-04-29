@@ -23,11 +23,11 @@ import Control.Exception
 import Control.Concurrent.Except
 import Control.Concurrent.Concurrential
 
-injector :: Injector (ExceptT SomeException IO) (Either SomeException)
-injector term = runExceptT term >>= return
+runner :: Runner (ExceptT SomeException IO) (Either SomeException)
+runner term = runExceptT term >>= return
 
-retractor :: Retractor (Either SomeException)
-retractor term = case term of 
+joiner :: Joiner (Either SomeException)
+joiner term = case term of 
     Left e -> return $ Left e
     Right v -> v
 
@@ -48,4 +48,4 @@ safely io = ExceptT ((Right <$> io) `catch` (\(e :: SomeException) -> return $ L
 runSafely
   :: Concurrential (ExceptT SomeException IO) a
   -> IO (Either SomeException a)
-runSafely c = runConcurrential retractor injector c wait
+runSafely c = runConcurrential joiner runner c wait
