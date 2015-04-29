@@ -88,8 +88,7 @@ would have any benefits or drawbacks. The injections `sequentially` and
 
 With this language in place, the function `runConcurrential` is defined, which
 will run the `m`s in the `Concurrential` term concurrently such that all
-sequential `SCAtom` terms are run in the order in which they appear. Of course,
-the caller must define how the monad `m` can be injected into `IO` (see the
-`Injector` type), but also how an IO inside an `m` can be pulled out front (see
-the `Retractor` type). The terms `Injector` and `Retractor` are not standard
-and probably not ideal.
+sequential `SCAtom` terms are run in the order in which they appear.
+Since the `Async` functions work only with `IO`, the programmer must define how
+the monad `m` can be injected into `IO` (see the `Runner` type), and also how
+an `IO` inside an `m` can be pulled out front (see the `Joiner` type).
