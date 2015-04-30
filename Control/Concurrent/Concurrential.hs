@@ -131,10 +131,6 @@ type Joiner g = forall a . g (IO a) -> IO (g a)
 -- | Run a Concurrential term with a continuation. We choose CPS here because
 --   it allows us to explot @withAsync@, giving us a guarantee that an
 --   exception in a spawning thread will kill spawned threads.
---
---   TBD generalize the IO to any MonadIO?
---   Maybe not! runConcurrentialK will always run your monad @f@ down to its
---   IO base; it has to, in order to do concurrency.
 runConcurrentialK
   :: (Functor f, Applicative f, Monad f)
   => Joiner f
@@ -145,9 +141,6 @@ runConcurrentialK
   -- ^ The sequential part.
   -> ((SomeAsync, Async (f t)) -> IO (f r))
   -- ^ The continuation; fst is sequential part, snd is value part.
-  --   We use the rank 2 type for s because we really don't care what the
-  --   value of the sequential part it, we just need to wait for it and then
-  --   continue with >>.
   -> IO (f r)
 runConcurrentialK joiner runner sc sequentialPart k = case sc of
     SCAtom choice -> case choice of
@@ -214,12 +207,8 @@ runConcurrential
   -> IO (f r)
 runConcurrential joiner runner c k = do
     let action = \sequentialPart ->
-            runConcurrentialK joiner runner c (SomeAsync sequentialPart) continue
+            runConcurrentialK joiner runner c (SomeAsync sequentialPart) (k . snd)
     withAsync (return ()) action
-
-  where
-
-    continue (_, async) = k async
 
 runConcurrentialSimple :: Concurrential IO t -> (Async t -> IO r) -> IO r
 runConcurrentialSimple c k = runIdentity <$> runConcurrential simpleJoiner simpleRunner c (continue k)
