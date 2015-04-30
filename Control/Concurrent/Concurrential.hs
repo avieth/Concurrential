@@ -41,9 +41,16 @@ module Control.Concurrent.Concurrential (
 
 import Control.Applicative
 import Control.Monad
+import Control.Concurrent.MVar
 import Control.Concurrent.Async hiding (concurrently)
 import Control.Exception
 import Data.Typeable
+
+data SomeAsync where
+  SomeAsync :: Async a -> SomeAsync
+
+waitSomeAsync :: SomeAsync -> IO ()
+waitSomeAsync (SomeAsync async) = wait async >> return ()
 
 -- | Our own Identity functor, so that we don't have to depend upon some
 --   other package.
@@ -119,10 +126,7 @@ type Runner f g = forall a . f a -> IO (g a)
 
 -- | A witness of this type proves that g is in some sense compatible with IO:
 --   we can bind through it.
---   TBD would it suffice to give the simpler type
---     forall a . g (IO a) -> IO (g a)
---   ?
-type Joiner g = forall a . g (IO (g a)) -> IO (g a)
+type Joiner g = forall a . g (IO a) -> IO (g a)
 
 -- | Run a Concurrential term with a continuation. We choose CPS here because
 --   it allows us to explot @withAsync@, giving us a guarantee that an
@@ -137,41 +141,57 @@ runConcurrentialK
   -> Runner m f
   -> Concurrential m t
   -- ^ The computation to run.
-  -> Async (f s)
+  -> SomeAsync
   -- ^ The sequential part.
-  -> (forall s . (Async (f s), Async (f t)) -> IO r)
+  -> ((SomeAsync, Async (f t)) -> IO (f r))
   -- ^ The continuation; fst is sequential part, snd is value part.
   --   We use the rank 2 type for s because we really don't care what the
   --   value of the sequential part it, we just need to wait for it and then
   --   continue with >>.
-  -> IO r
+  -> IO (f r)
 runConcurrentialK joiner runner sc sequentialPart k = case sc of
     SCAtom choice -> case choice of
         -- The async created becomes the sequential part and the value
         -- part. So when another Sequential is encountered, its value part
         -- will have to wait for this computation to complete.
         Sequential em -> withAsync
-                         (wait sequentialPart >> runner em)
-                         (\async -> k (async, async))
+                         (waitSomeAsync sequentialPart >> runner em)
+                         (\async -> k (SomeAsync async, async))
         -- The async created is the value part, but the sequential part
         -- remains the same.
         Concurrent em -> withAsync
                          (runner em)
                          (\async -> k (sequentialPart, async))
+
     SCBind sc next ->
-        runConcurrentialK joiner runner sc sequentialPart $ \(sequentialPart, asyncS) ->
+        runConcurrentialK joiner runner sc sequentialPart $ \(sequentialPart, asyncS) -> do
+        synchronizeSequentialPart <- newEmptyMVar
         let waitAndContinue = do
                 s <- wait asyncS
+                let synchronizeAndWait = \(sequentialPart, valuePart) -> do
+                        putMVar synchronizeSequentialPart sequentialPart
+                        wait valuePart
                 let continue = \x ->
                         runConcurrentialK
                         joiner
                         runner
                         (next x)
                         sequentialPart
-                        (wait . snd)
+                        synchronizeAndWait
                 let unretracted = fmap continue s
-                joiner unretracted
-        in  withAsync waitAndContinue (\async -> k (sequentialPart, async))
+                fmap join (joiner unretracted)
+        -- This is a very sensitive part of the definition. We fire off a thread
+        -- to wait for @asyncS@ and then continue through @next@, but we also
+        -- create a thread which blocks until the aforementioned has determined
+        -- what is the sequential part of the computation through @next@, as
+        -- we need that in order to call the continuation @k@.
+        -- We don't actually have to carry the sequential part through; we just
+        -- need to create another SomeAsync which waits for that sequential
+        -- part. To achieve this, we use an MVar.
+        withAsync waitAndContinue $ \async ->
+          withAsync (takeMVar synchronizeSequentialPart >>= waitSomeAsync) $ \sequentialPart ->
+            k (SomeAsync sequentialPart, async)
+
     SCAp left right ->
         runConcurrentialK joiner runner left sequentialPart $ \(sequentialPart, asyncF) ->
         runConcurrentialK joiner runner right sequentialPart $ \(sequentialPart, asyncX) ->
@@ -188,25 +208,29 @@ runConcurrential
   => Joiner f
   -> Runner m f
   -> Concurrential m t
-  -> (Async (f t) -> IO r)
+  -> (Async (f t) -> IO (f r))
   -- ^ Similar contract to withAsync; the Async argument is useless outside of
   -- this function.
-  -> IO r
+  -> IO (f r)
 runConcurrential joiner runner c k = do
     let action = \sequentialPart ->
-            runConcurrentialK joiner runner c sequentialPart (k . snd)
-    withAsync (return (return ())) action
-
-runConcurrentialSimple :: Concurrential IO t -> (Async t -> IO r) -> IO r
-runConcurrentialSimple c k = runConcurrential simpleJoiner simpleRunner c (continue k)
+            runConcurrentialK joiner runner c (SomeAsync sequentialPart) continue
+    withAsync (return ()) action
 
   where
 
-    continue :: (Async t -> IO r) -> (Async (Identity t) -> IO r)
-    continue k = \async -> k $ fmap runIdentity async
+    continue (_, async) = k async
+
+runConcurrentialSimple :: Concurrential IO t -> (Async t -> IO r) -> IO r
+runConcurrentialSimple c k = runIdentity <$> runConcurrential simpleJoiner simpleRunner c (continue k)
+
+  where
+
+    continue :: (Async t -> IO r) -> (Async (Identity t) -> IO (Identity r))
+    continue k = \async -> Identity <$> k (fmap runIdentity async)
 
     simpleJoiner :: Joiner Identity
-    simpleJoiner = runIdentity
+    simpleJoiner = fmap Identity . runIdentity
 
     simpleRunner :: Runner IO Identity
     simpleRunner = fmap Identity
