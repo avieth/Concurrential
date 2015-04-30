@@ -35,7 +35,6 @@ module Control.Concurrent.Concurrential (
   , concurrently
 
   , wait
-  -- ^ From Async
 
   ) where
 
