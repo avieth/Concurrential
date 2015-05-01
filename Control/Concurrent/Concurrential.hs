@@ -16,7 +16,7 @@ would have been run had they been typical IOs.
 
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE AutoDeriveTypeable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -24,6 +24,7 @@ would have been run had they been typical IOs.
 module Control.Concurrent.Concurrential (
 
     Concurrential
+  , ConcurrentialAp
 
   , Runner
   , Joiner
@@ -33,6 +34,7 @@ module Control.Concurrent.Concurrential (
 
   , sequentially
   , concurrently
+  , concurrentially
 
   , wait
 
@@ -43,7 +45,6 @@ import Control.Monad
 import Control.Concurrent.MVar
 import Control.Concurrent.Async hiding (concurrently)
 import Control.Exception
-import Data.Typeable
 
 data SomeAsync where
   SomeAsync :: Async a -> SomeAsync
@@ -68,7 +69,6 @@ instance Monad Identity where
 -- | Description of the way in which a monadic term's evaluation should be
 --   carried out.
 data Choice m t = Sequential (m t) | Concurrent (m t)
-  deriving (Typeable)
 
 instance Functor m => Functor (Choice m) where
   fmap f choice = case choice of
@@ -81,7 +81,6 @@ data Concurrential m t where
     SCAtom :: Choice m t -> Concurrential m t
     SCBind :: Concurrential m s -> (s -> Concurrential m t) -> Concurrential m t
     SCAp :: Concurrential m (r -> t) -> Concurrential m r -> Concurrential m t
-  deriving (Typeable)
 
 instance Functor m => Functor (Concurrential m) where
   fmap f sc = case sc of
@@ -91,11 +90,24 @@ instance Functor m => Functor (Concurrential m) where
 
 instance Applicative m => Applicative (Concurrential m) where
   pure = SCAtom . Sequential . pure
-  (<*>) = SCAp
+  cf <*> cx = SCBind cf (\f -> SCBind cx (\x -> pure (f x)))
 
 instance Applicative m => Monad (Concurrential m) where
   return = pure
   (>>=) = SCBind
+
+-- | Concurrential without a Monad instance, but an Applicative instance
+--   which exploits concurrency.
+newtype ConcurrentialAp m t = ConcurrentialAp {
+    unConcurrentialAp :: Concurrential m t
+  }
+
+instance Functor m => Functor (ConcurrentialAp m) where
+  fmap f sc = ConcurrentialAp $ fmap f (unConcurrentialAp sc)
+
+instance Applicative m => Applicative (ConcurrentialAp m) where
+  pure = ConcurrentialAp . pure
+  cf <*> cx = ConcurrentialAp $ SCAp (unConcurrentialAp cf) (unConcurrentialAp cx)
 
 -- | This corresponds to the notion of a common type of monad transformer:
 --   there is some monad g, and then its associated transformer type f, for
@@ -242,8 +254,8 @@ runConcurrentialSimple c k = runIdentity <$> runConcurrential simpleJoiner simpl
 --   @sequentially io@! The ordering through applicative combinators is
 --   guaranteed only among sequential terms.
 --
-sequentially :: m t -> Concurrential m t
-sequentially = SCAtom . Sequential
+sequentially :: m t -> ConcurrentialAp m t
+sequentially = ConcurrentialAp . SCAtom . Sequential
 
 -- | Create an effect which is run concurrently where possible, i.e. whenever it
 --   combined applicatively with other terms. For instance:
@@ -256,5 +268,10 @@ sequentially = SCAtom . Sequential
 --   When running the term @a@, the IO term @io@ will be run concurrently with
 --   @someConcurrential@, but not so in @b@, because monadic composition has
 --   been used.
-concurrently :: m t -> Concurrential m t
-concurrently = SCAtom . Concurrent
+concurrently :: m t -> ConcurrentialAp m t
+concurrently = ConcurrentialAp . SCAtom . Concurrent
+
+-- | Inject a ConcurrentialAp into Concurrential, losing the
+--   concurrency-enabling Applicative instance but gaining a Monad instance.
+concurrentially :: ConcurrentialAp m t -> Concurrential m t
+concurrentially = unConcurrentialAp
