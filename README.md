@@ -64,31 +64,33 @@ demonstration = runConcurrentialSimple $
 Terms of the `Concurrently` monad are (approximately) of the form
 
 ```Haskell
-data Concurrential m t where
-  SCAtom :: Either (Sequential (m t)) (Concurrently (m t)) -> Concurrential m t
-  SCBind :: Concurrential m s -> (s -> Concurrential m t) -> Concurrential m t
-  SCAp :: Concurrential m (r -> t) -> Concurrential m r -> Concurrential m t
+data Concurrential t where
+  SCAtom :: Either (Sequential t) (Concurrent t) -> Concurrential t
+  SCBind :: Concurrential s -> (s -> Concurrential t) -> Concurrential t
+  SCAp :: Concurrential (r -> t) -> Concurrential r -> Concurrential t
 ```
 
-Given the `SCBind` and `SCAp` constructors, definitions of `>>=` and `<*>` are
-trivial:
+Given the `SCBind` constructor, definition of `>>=` is trivial:
 
 ```Haskell
-(<*>) :: Concurrential m (r -> t) -> Concurrential m r -> Concurrential m t
-(<*>) = SCAp
-
-(>>=) :: Concurrential m s -> (s -> Concurrential m t) -> Concurrential m t
+(>>=) :: Concurrential s -> (s -> Concurrential t) -> Concurrential t
 (>>=) = SCBind
 ```
 
-`return` and `pure` use `pure :: a -> m a` and inject it into the sequential
-variant of `SCAtom`, but I am not sure that choosing the concurrently variant
-would have any benefits or drawbacks. The injections `sequentially` and
-`concurrently` wrap an existing `m` in the appropriate `SCAtom` variant.
+The applicative `<*>` is more involved. Whereas the `Concurrently` monad from
+`Control.Concurrent.Async` evaluates both arguments of `<*>` concurrently,
+the applicative for `Concurrential` does not! This is to guarantee that
+
+  `mf <*> mx = mf `ap` mx = mf >>= (\f -> mx >>= \x -> return (f x))`
+
+which some might expect of any monad. To gain concurrency in `Concurrential`,
+we define `ConcurrentialAp`, which is a newtype over `Concurrential`, but
+which is *not* a monad! This type's applicative instance uses the `SCAp`
+constructor. When interpreted by `runConcurrential`, it runs its arguments
+concurrently.
+
+`return` and `pure` use the sequential variant of `SCAtom`.
 
 With this language in place, the function `runConcurrential` is defined, which
 will run the `m`s in the `Concurrential` term concurrently such that all
 sequential `SCAtom` terms are run in the order in which they appear.
-Since the `Async` functions work only with `IO`, the programmer must define how
-the monad `m` can be injected into `IO` (see the `Runner` type), and also how
-an `IO` inside an `m` can be pulled out front (see the `Joiner` type).
