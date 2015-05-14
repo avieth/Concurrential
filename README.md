@@ -33,13 +33,13 @@ writeIO :: String -> Maybe String -> IO ()
 writeIO key value = putStrLn ("Writing: " ++ key ++ ", " ++ show value)
 
 -- | Reads may be executed concurrently.
-read :: String -> Concurrential IO (Maybe String)
+read :: String -> ConcurrentialAp (Maybe String)
 read = concurrently . readIO
 
 -- | Writes must be executed sequentially, else the programmer's intent will not
 --   be respected: if two or more writes to the same key are staged, then the
 --   one which appears later in the term must overwrite the earlier one.
-write :: String -> Maybe String -> Concurrential IO ()
+write :: String -> Maybe String -> ConcurrentialAp ()
 write key = sequentially . writeIO key
 
 -- | Run this IO to see that the reads do indeed happen concurrently (the
@@ -47,7 +47,7 @@ write key = sequentially . writeIO key
 --   are always performed in-order. In particular, the second write to "A" will
 --   always prevail.
 demonstration :: IO [Maybe String]
-demonstration = runConcurrentialSimple $
+demonstration = runConcurrential . concurrentially $
         (\x y z -> [x, y, z])
     <$> read "A"
     <*  write "A" (Just "z")
