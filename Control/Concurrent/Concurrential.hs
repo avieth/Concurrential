@@ -77,7 +77,7 @@ instance Functor m => Functor (Choice m) where
       Concurrent io -> Concurrent $ fmap f io
 
 -- | Description of computation which is composed of sequential and concurrent
---   parts in some monad @m@.
+--   parts.
 data Concurrential t where
     SCAtom :: Choice IO t -> Concurrential t
     SCBind :: Concurrential s -> (s -> Concurrential t) -> Concurrential t
