@@ -24,7 +24,7 @@ would have been run had they been typical IOs.
 module Control.Concurrent.Concurrential (
 
     Concurrential
-  , ConcurrentialAp
+  , ConcurrentialAp(ConcurrentialAp)
 
   , runConcurrential
 
