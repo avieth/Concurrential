@@ -8,10 +8,14 @@ Stability   : experimental
 Portability : non-portable (GHC only)
 
 The functions @sequentially@ and @concurrently@ inject @IO@ terms into the
-@Concurrential@ monad. This monad's Applicative instance will exploit as
-much concurrency as possible, much like the @Concurrently@ monad from async,
-such that all @sequentially@ terms will be run in the order in which they
-would have been run had they been typical IOs.
+@ConcurrentialAp@ applicative functor, whose applicative instance will exploit
+as much concurrency as possible such that all @sequentially@ terms will be run
+in the order in which they would have been run had they been typical IOs.
+
+Terms of @ConcurrentialAp@ can be transformed into terms of @Concurrential@,
+which is a monad. The order of sequential terms is respected even through
+binds; a sequential term will not be evaluted until all binds appearing
+syntactically earlier than it have been expanded.
 -}
 
 {-# LANGUAGE GADTs #-}
